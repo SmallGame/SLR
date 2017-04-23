@@ -38,7 +38,8 @@ namespace SLR {
                          m_superVoxels[m_svNumX * m_svNumY * uz + m_svNumX * ly + ux] * wuz * wly * wux +
                          m_superVoxels[m_svNumX * m_svNumY * uz + m_svNumX * uy + lx] * wuz * wuy * wlx +
                          m_superVoxels[m_svNumX * m_svNumY * uz + m_svNumX * uy + ux] * wuz * wuy * wux);
-        return density + m_maximumDifferences[(m_svNumX - 1) * (m_svNumY - 1) * lz + (m_svNumX - 1) * ly + lx];
+        uint32_t diffCellIdx = (m_svNumX - 1) * (m_svNumY - 1) * std::min(lz, m_svNumZ - 2) + (m_svNumX - 1) * std::min(ly, m_svNumY - 2) + std::min(lx, m_svNumX - 2);
+        return density + m_maximumDifferences[diffCellIdx];
     };
     
     void DensityGridMediumDistribution::setupSuperVoxels() {
@@ -94,11 +95,52 @@ namespace SLR {
                             float py = (float)iy / (m_numY - 1);
                             for (int ix = lix; ix <= uix; ++ix) {
                                 float px = (float)ix / (m_numX - 1);
-                                Point3D p(px, py, pz);
-                                float actualDensity = calcDensity(p);
-                                float coarseDensity = calcDensityInSuperVoxels(p);
-                                float diff = actualDensity - coarseDensity;
-                                maxDiff = std::max(maxDiff, diff);
+                                if (iz > liz && iz < uiz && iy > liy && iy < uiy && ix > lix && ix < uix) {
+                                    // calculate the difference at the sampling point of original values. 
+                                    Point3D p(px, py, pz);
+                                    float actualDensity = m_density_grid[iz][m_numX * iy + ix];
+                                    float coarseDensity = calcDensityInSuperVoxels(p);
+                                    float diff = actualDensity - coarseDensity;
+                                    maxDiff = std::max(maxDiff, diff);   
+                                }
+                                else {
+                                    // There is a possibility that an interpolated original value exceeds that of super voxel values.
+                                    // Therefore, perform conservative difference calculation.
+                                    // calculate the maximum value among the corners of the original voxel and
+                                    // the minimum value among the same points of the super voxel representation.
+                                    float maxActualValue = 0;
+                                    float minCoarseValue = INFINITY;
+                                    int zBase = iz;
+                                    int yBase = iy;
+                                    int xBase = ix;
+                                    int numZIterations = (iz > liz && iz < uiz) ? 1 : 2;
+                                    int numYIterations = (iy > liy && iy < uiy) ? 1 : 2;
+                                    int numXIterations = (ix > lix && ix < uix) ? 1 : 2;
+                                    if (numZIterations == 2)
+                                        zBase = iz == liz ? liz : uiz - 1;
+                                    if (numYIterations == 2)
+                                        yBase = iy == liy ? liy : uiy - 1;
+                                    if (numXIterations == 2)
+                                        xBase = ix == lix ? lix : uix - 1;
+                                    for (int diz = 0; diz < numZIterations; ++diz) {
+                                        int iiz = zBase + diz;
+                                        float ppz = std::clamp((float)iiz / (m_numZ - 1), lpz, upz);
+                                        for (int diy = 0; diy < numYIterations; ++diy) {
+                                            int iiy = yBase + diy;
+                                            float ppy = std::clamp((float)iiy / (m_numY - 1), lpy, upy);
+                                            for (int dix = 0; dix < numXIterations; ++dix) {
+                                                int iix = xBase + dix;
+                                                float ppx = std::clamp((float)iix / (m_numX - 1), lpx, upx);
+                                                Point3D p(ppx, ppy, ppz);
+                                                float actualDensity = calcDensity(p);
+                                                float coarseDensity = calcDensityInSuperVoxels(p);
+                                                maxActualValue = std::max(maxActualValue, actualDensity);
+                                                minCoarseValue = std::min(minCoarseValue, coarseDensity);
+                                            }
+                                        }
+                                    }
+                                    maxDiff = std::max(maxDiff, maxActualValue - minCoarseValue);
+                                }
                             }
                         }
                     }
@@ -115,6 +157,7 @@ namespace SLR {
         delete[] maximumDifferences;
 
 //        // sanity check
+//        printf("start sanity check.\n");
 //        for (int siz = 0; siz < m_svNumZ; ++siz) {
 //            float pz = (float)siz / (m_svNumZ - 1);
 //            for (int siy = 0; siy < m_svNumY; ++siy) {
